@@ -1701,11 +1701,7 @@ public class MainGui extends JFrame implements Runnable {
                     updateTokenScopes();
                 }
             } else if (event.getSource() == tokenDialog.getRequestTokenButton()) {
-                tokenGetDialog.setLocationRelativeTo(tokenDialog);
-                tokenGetDialog.reset();
-                client.startWebserver();
-                tokenGetDialog.setVisible(true);
-
+                openTokenGetDialog(token -> tokenReceived(token));
             } else if (event.getSource() == tokenDialog.getDoneButton()) {
                 tokenDialog.setVisible(false);
             } else if (event.getSource() == tokenDialog.getVerifyTokenButton()) {
@@ -5087,7 +5083,10 @@ public class MainGui extends JFrame implements Runnable {
 
             @Override
             public void run() {
-                tokenReceived(token);
+                Consumer<String> callback = tokenGetDialog.getTokenCallback();
+                if (callback != null) {
+                    callback.accept(token);
+                }
             }
         });
     }
@@ -5111,6 +5110,14 @@ public class MainGui extends JFrame implements Runnable {
         tokenDialog.update("",token);
         updateConnectionDialog(null);
         verifyToken(token);
+    }
+
+    public void openTokenGetDialog(Consumer<String> callback) {
+        tokenGetDialog.setTokenCallback(callback);
+        tokenGetDialog.setLocationRelativeTo(tokenDialog);
+        tokenGetDialog.reset();
+        client.startWebserver();
+        tokenGetDialog.setVisible(true);
     }
     
     /**

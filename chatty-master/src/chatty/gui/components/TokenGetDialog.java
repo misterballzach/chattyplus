@@ -22,6 +22,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import javax.swing.*;
 
 /**
@@ -39,6 +40,7 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
     
     private final JTextField urlField = new JTextField(20);
     private final LinkLabel status;
+    private Consumer<String> tokenCallback;
     private final JButton copyUrl = new JButton(Language.getString("openUrl.button.copy"));
     private final JButton openUrl = new JButton(Language.getString("openUrl.button.open", 1));
     private final JButton close = new JButton(Language.getString("dialog.button.close"));
@@ -160,6 +162,14 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
         setStatus("Token received.. completing..");
     }
     
+    public void setTokenCallback(Consumer<String> tokenCallback) {
+        this.tokenCallback = tokenCallback;
+    }
+
+    public Consumer<String> getTokenCallback() {
+        return tokenCallback;
+    }
+
     private void setStatus(String text) {
         status.setText("<html><body style='width:250px;text-align:center'>"+text);
         pack();
