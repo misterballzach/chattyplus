@@ -2,9 +2,6 @@ package chatty.gui.components.settings;
 
 import java.awt.GridBagConstraints;
 import javax.swing.JCheckBox;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
-import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JTextArea;
@@ -34,17 +31,6 @@ public class BotSettings extends SettingsPanel {
         credentials.add(new JLabel("Bot OAuth Token:"), d.makeGbc(0, 2, 1, 1, GridBagConstraints.EAST));
         JTextField botToken = d.addSimpleStringSetting("botToken", 20, true);
         credentials.add(botToken, d.makeGbc(1, 2, 1, 1, GridBagConstraints.WEST));
-
-        JButton getTokenButton = new JButton("Get Token");
-        getTokenButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                d.getMainGui().openTokenGetDialog(token -> {
-                    botToken.setText(token);
-                });
-            }
-        });
-        credentials.add(getTokenButton, d.makeGbc(2, 2, 1, 1, GridBagConstraints.WEST));
 
         JPanel personality = addTitledPanel("Personality", 2);
 
