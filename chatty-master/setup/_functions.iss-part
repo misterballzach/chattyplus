@@ -1,0 +1,951 @@
+[Run]
+Filename: "{code:RunParam|runChattyPath}"; Parameters: "{code:RunParam|runChattyParam}"; WorkingDir: "{code:RunParam|runChattyWdir|}"; Description: "Restart Chatty"; Flags: postinstall nowait; Check: LaunchCheck
+
+[Code]
+// Skip "Select Directory" Page when updating
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = wpSelectDir) and (CompareText(ExpandConstant('{param:TYPE}'), 'update') = 0);
+end;
+
+// Replace ` by " in parameters
+function RunParam(const Param: string): String;
+Begin
+	Result := ExpandConstant('{param:'+Param+'}')
+	StringChangeEx(Result, '`', '"', true)
+End;
+
+// Check if a parameter exists
+function CmdLineParamExists(const Value: string): Boolean;
+var
+  I: Integer;  
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(Copy(ParamStr(I), 0, Length(Value)), Value) = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
+// Test if parameters for restarting Chatty are set
+function LaunchCheck: Boolean;
+begin
+  Result := CmdLineParamExists('/runChattyPath=') AND CmdLineParamExists('/runChattyParam=') AND CmdLineParamExists('/runChattyWdir=');
+end;
+
+function IsAppRunning(const FileName : string): Boolean;
+var
+    FSWbemLocator: Variant;
+    FWMIService   : Variant;
+    FWbemObjectSet: Variant;
+begin
+    Result := false;
+    FSWbemLocator := CreateOleObject('WBEMScripting.SWBEMLocator');
+    FWMIService := FSWbemLocator.ConnectServer('', 'root\\CIMV2', '', '');
+    FWbemObjectSet := FWMIService.ExecQuery(Format('SELECT Name FROM Win32_Process Where CommandLine LIKE "%%%s%%"',[FileName]));
+    Result := (FWbemObjectSet.Count > 0);
+    FWbemObjectSet := Unassigned;
+    FWMIService := Unassigned;
+    FSWbemLocator := Unassigned;
+end;
+
+// Mostly debugging
+procedure InitializeWizard;
+//var
+//  I: Integer;  
+//  Parame: string;
+begin
+//  for I := 1 to ParamCount do
+//    Begin
+//    	Parame := ParamStr(I);
+//        StringChangeEx(Parame, '`', '"', true);
+//    	Log('The Value is: ' + ParamStr(I) + ' -> '+ Parame);
+//    End;
+  Log('runChattyPath: ['+RunParam('runChattyPath')+']');
+  Log('runChattyParam: ['+RunParam('runChattyParam')+']');
+  Log('runChattyWdir: ['+RunParam('runChattyWdir')+']');
+  //Log(IntToStr(FindWindowByWindowName('Chatty')))
+  //if IsAppRunning('Chatty.jar') then
+  //    MsgBox('Please close any remaining Chatty instances.', mbError, MB_OK)
+end;
+
+{ All of these variables are only properly set when
+  ConfigFileChecked is True.
+}
+var
+  ConfigFileConvert: Boolean;
+  ConfigFileChecked: Boolean;
+  ConfigFileName: String;
+  ConfigFileBackupName: String;
+  ConfigFileIsJPackage: Boolean;
+
+{ Used to decide whether to install the Config File and to
+  gather information on the currently installed Config File
+  and making a backup if necessary.
+
+  In the Config File it checks the main class name value,
+  since that is distinct between the different formats. It
+  doesn't check the ChattyPortable.cfg since it doesn't
+  exist in the old format.
+  
+  If the file doesn't already exist, the backup copy will
+  fail and thus ConfigFileConvert won't be set to True.
+
+  The will be installed either when it should be converted
+  (because the main class name doesn't match) or when it's
+  selected for installation. It won't always be converted
+  though, see convert function ConfigFileAfterInstall.
+}
+function ConfigFileCheck(): Boolean;
+var
+  MainClassName: String;
+  NewMainClassName: String;
+begin
+    { Only check currently installed Config File once. }
+    if not ConfigFileChecked and WizardIsComponentSelected('runtime') then begin
+        ConfigFileName := ExpandConstant('{app}\app\Chatty.cfg');
+        if ExpandConstant('{#IsJPackage}') = '1' then
+            ConfigFileIsJPackage := True;
+        if ConfigFileIsJPackage then
+            NewMainClassName := 'chatty.Chatty2'
+        else
+            NewMainClassName := 'chatty/Chatty';
+        MainClassName := GetIniString('Application', 'app.mainclass', '', ConfigFileName);
+        Log('Checking Config File: '+ConfigFileName+' / '+MainClassName+' ('+NewMainClassName+')');
+        if CompareStr(MainClassName, NewMainClassName) <> 0 then begin
+            Log('Config File should be converted');
+            ConfigFileBackupName := ConfigFileName+'_backup';
+            if FileCopy(ConfigFileName, ConfigFileBackupName, False) then begin
+                Log('Made Config File backup')
+                ConfigFileConvert := True;
+            end;
+        end;
+        ConfigFileChecked := True;
+    end;
+    if ConfigFileConvert or WizardIsComponentSelected('config') then begin
+        Result := True;
+        Log('Write Config File');
+    end
+    else
+    begin
+        Result := False;
+        Log('Dont write Config File');
+    end;
+end;
+
+{ Checks if the given Input begins with the given Prefix.
+  
+  Probably not very efficient, but it'll do for this.  
+}
+function StartsWith(const Input, Prefix: String): Boolean;
+var
+  Temp : String;
+begin
+    Temp := Copy(Input, 1, Length(Prefix));
+    if CompareStr(Temp, Prefix) = 0 then
+        Result := True
+    else
+        Result := False;
+end;
+
+{ Adds lines to the given StringList while adding or removing
+  the given Prefix, depending on whether this installer is
+  for the new or old Config File format.
+}
+procedure AddArgs(const Prefix: string; StringList, AddStrings: TStrings);
+var
+  Index : Integer;
+  Temp : String;
+begin
+    for Index := 0 to AddStrings.Count - 1 do begin
+        Temp := AddStrings[Index];
+        if ConfigFileIsJPackage then begin
+            { Add Prefix if necessary. }
+            if StartsWith(Temp, Prefix) then
+                StringList.Append(Temp)
+            else
+                StringList.Append(Prefix+Temp);
+        end
+        else
+        begin
+            { Remove Prefix if necessary. }
+            if StartsWith(Temp, Prefix) then
+                StringList.Append(Copy(Temp, Length(Prefix)+1, 1000))
+            else
+                StringList.Append(Temp);
+        end;
+    end;
+end;
+
+{ Converts the Config File after install, if necessary.
+
+  This is not done if the file is selected for installation,
+  since that assumes it's supposed to be entirely replaced
+  instead of "updated".
+
+  The conversion looks for all lines under the "[JVMOptions]" and
+  "[ArgOptions]" sections in the old (javapackager) format file
+  and moves them to the "[JavaOptions]" and "[ArgOptions]" sections
+  in the new (jpackage) format file, while adding the required
+  prefix to each line. It does the opposite when going back to
+  the older format.
+}
+procedure ConfigFileAfterInstall();
+var
+  TempList: TStrings;
+  JavaOptions: TStrings;
+  JavaOptionsSourceKey: String;
+  JavaOptionsTargetKey: String;
+  ArgOptions: TStrings;
+  CurrentSection : String;
+  Index: Integer;
+  Line: String;
+  NewFile : TStrings;
+  IgnoreSection : Boolean;
+begin
+    if ConfigFileChecked and ConfigFileConvert and not WizardIsComponentSelected('config') then begin
+        { New JPackage Config File Format }
+        TempList := TStringList.Create;
+        JavaOptions := TStringList.Create;
+        ArgOptions := TStringList.Create;
+        NewFile := TStringList.Create;
+        IgnoreSection := False;
+        try
+            if ConfigFileIsJPackage then begin
+                JavaOptionsSourceKey := '[JVMOptions]';
+                JavaOptionsTargetKey := '[JavaOptions]';
+            end
+            else
+            begin
+                JavaOptionsTargetKey := '[JVMOptions]';
+                JavaOptionsSourceKey := '[JavaOptions]';
+            end;
+                
+            TempList.LoadFromFile(ConfigFileBackupName);
+            for Index := 0 to TempList.Count - 1 do begin
+                Line := TempList[Index];
+                Log('Line: '+Line);
+                if Length(Line) > 0 then begin
+                    if (Line[1] = '[') and (Line[Length(Line)] = ']') then begin
+                        Log('Start section '+Line);
+                        CurrentSection := Line;
+                    end
+                    else
+                    begin
+                        if CompareStr(CurrentSection, JavaOptionsSourceKey) = 0 then
+                            JavaOptions.Append(Line);
+                        if CompareStr(CurrentSection, '[ArgOptions]') = 0 then
+                            ArgOptions.Append(Line);
+                        Log('Under section '+CurrentSection+' there is option '+Line);
+                    end;
+                end;
+            end;
+            Log('JavaOptions: '+JavaOptions.Text+' ArgOptions: '+ArgOptions.Text);
+            TempList.LoadFromFile(ConfigFileName);
+            for Index := 0 to TempList.Count - 1 do begin
+                Line := TempList[Index];
+                Log('Line New File: '+Line);
+                if CompareStr(Line, JavaOptionsTargetKey) = 0 then begin
+                    NewFile.Append(Line);
+                    AddArgs('java-options=', NewFile, JavaOptions);
+                    IgnoreSection := True;
+                end
+                else if CompareStr(Line, '[ArgOptions]') = 0 then begin
+                    NewFile.Append(Line);
+                    AddArgs('arguments=', NewFile, ArgOptions);
+                    IgnoreSection := True;
+                end
+                else
+                if (Length(Line) > 0) and (Line[1] = '[') then begin
+                    IgnoreSection := False;
+                end;
+                if (Length(Line) = 0) or (not IgnoreSection) then
+                    NewFile.Append(Line);
+            end;
+            Log('Result: '+NewFile.Text);
+            NewFile.SaveToFile(ConfigFileName);
+            MsgBox('The Chatty.cfg format has changed from the previously installed version. Options have been automatically converted, so you probably don''t need to take any further action:' + #13#10#13#10
+                + NewFile.Text + #13#10#13#10
+                + 'Additionally, a backup of the old file has been created at:' + #13#10
+                + ConfigFileBackupName, mbInformation, MB_OK);
+        finally
+            TempList.Free;
+            NewFile.Free;
+            JavaOptions.Free;
+            ArgOptions.Free;
+        end;
+    end;
+end;
+
+function GetRuntimeFiles(): TStrings;
+var
+  Files : TStrings;
+  Path : String;
+begin
+    Path := ExpandConstant('{app}');
+
+    Files := TStringList.Create;
+    Files.Append(Path+'\api-ms-win-core-console-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-datetime-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-debug-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-errorhandling-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-file-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-file-l1-2-0.dll');
+    Files.Append(Path+'\api-ms-win-core-file-l2-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-handle-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-heap-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-interlocked-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-libraryloader-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-localization-l1-2-0.dll');
+    Files.Append(Path+'\api-ms-win-core-memory-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-namedpipe-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-processenvironment-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-processthreads-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-processthreads-l1-1-1.dll');
+    Files.Append(Path+'\api-ms-win-core-profile-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-rtlsupport-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-string-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-synch-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-synch-l1-2-0.dll');
+    Files.Append(Path+'\api-ms-win-core-sysinfo-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-timezone-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-core-util-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-conio-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-convert-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-environment-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-filesystem-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-heap-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-locale-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-math-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-multibyte-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-private-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-process-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-runtime-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-stdio-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-string-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-time-l1-1-0.dll');
+    Files.Append(Path+'\api-ms-win-crt-utility-l1-1-0.dll');
+    Files.Append(Path+'\Chatty.exe');
+    Files.Append(Path+'\Chatty.ico');
+    Files.Append(Path+'\ChattyPortable.exe');
+    Files.Append(Path+'\ChattyPortable.ico');
+    Files.Append(Path+'\msvcp140.dll');
+    Files.Append(Path+'\msvcr100.dll');
+    Files.Append(Path+'\packager.dll');
+    Files.Append(Path+'\runtime\COPYRIGHT');
+    Files.Append(Path+'\runtime\LICENSE');
+    Files.Append(Path+'\runtime\README.txt');
+    Files.Append(Path+'\runtime\THIRDPARTYLICENSEREADME-JAVAFX.txt');
+    Files.Append(Path+'\runtime\THIRDPARTYLICENSEREADME.txt');
+    Files.Append(Path+'\runtime\Welcome.html');
+    Files.Append(Path+'\runtime\bin\JAWTAccessBridge-32.dll');
+    Files.Append(Path+'\runtime\bin\JAWTAccessBridge.dll');
+    Files.Append(Path+'\runtime\bin\JavaAccessBridge-32.dll');
+    Files.Append(Path+'\runtime\bin\JavaAccessBridge.dll');
+    Files.Append(Path+'\runtime\bin\WindowsAccessBridge-32.dll');
+    Files.Append(Path+'\runtime\bin\WindowsAccessBridge.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-console-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-datetime-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-debug-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-errorhandling-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-file-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-file-l1-2-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-file-l2-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-handle-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-heap-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-interlocked-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-libraryloader-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-localization-l1-2-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-memory-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-namedpipe-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-processenvironment-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-processthreads-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-processthreads-l1-1-1.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-profile-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-rtlsupport-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-string-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-synch-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-synch-l1-2-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-sysinfo-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-timezone-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-core-util-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-conio-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-convert-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-environment-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-filesystem-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-heap-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-locale-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-math-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-multibyte-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-private-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-process-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-runtime-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-stdio-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-string-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-time-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\api-ms-win-crt-utility-l1-1-0.dll');
+    Files.Append(Path+'\runtime\bin\attach.dll');
+    Files.Append(Path+'\runtime\bin\awt.dll');
+    Files.Append(Path+'\runtime\bin\bci.dll');
+    Files.Append(Path+'\runtime\bin\client\Xusage.txt');
+    Files.Append(Path+'\runtime\bin\client\jvm.dll');
+    Files.Append(Path+'\runtime\bin\concrt140.dll');
+    Files.Append(Path+'\runtime\bin\dcpr.dll');
+    Files.Append(Path+'\runtime\bin\decora_sse.dll');
+    Files.Append(Path+'\runtime\bin\deploy.dll');
+    Files.Append(Path+'\runtime\bin\dt_shmem.dll');
+    Files.Append(Path+'\runtime\bin\dt_socket.dll');
+    Files.Append(Path+'\runtime\bin\fontmanager.dll');
+    Files.Append(Path+'\runtime\bin\freetype.dll');
+    Files.Append(Path+'\runtime\bin\fxplugins.dll');
+    Files.Append(Path+'\runtime\bin\glass.dll');
+    Files.Append(Path+'\runtime\bin\glib-lite.dll');
+    Files.Append(Path+'\runtime\bin\gstreamer-lite.dll');
+    Files.Append(Path+'\runtime\bin\harfbuzz.dll');
+    Files.Append(Path+'\runtime\bin\hprof.dll');
+    Files.Append(Path+'\runtime\bin\instrument.dll');
+    Files.Append(Path+'\runtime\bin\j2gss.dll');
+    Files.Append(Path+'\runtime\bin\j2pcsc.dll');
+    Files.Append(Path+'\runtime\bin\j2pkcs11.dll');
+    Files.Append(Path+'\runtime\bin\jaas.dll');
+    Files.Append(Path+'\runtime\bin\jaas_nt.dll');
+    Files.Append(Path+'\runtime\bin\java.dll');
+    Files.Append(Path+'\runtime\bin\java_crw_demo.dll');
+    Files.Append(Path+'\runtime\bin\javaaccessbridge.dll');
+    Files.Append(Path+'\runtime\bin\javafx_font.dll');
+    Files.Append(Path+'\runtime\bin\javafx_font_t2k.dll');
+    Files.Append(Path+'\runtime\bin\javafx_iio.dll');
+    Files.Append(Path+'\runtime\bin\javajpeg.dll');
+    Files.Append(Path+'\runtime\bin\jawt.dll');
+    Files.Append(Path+'\runtime\bin\jdwp.dll');
+    Files.Append(Path+'\runtime\bin\jfr.dll');
+    Files.Append(Path+'\runtime\bin\jfxmedia.dll');
+    Files.Append(Path+'\runtime\bin\jfxwebkit.dll');
+    Files.Append(Path+'\runtime\bin\jimage.dll');
+    Files.Append(Path+'\runtime\bin\jli.dll');
+    Files.Append(Path+'\runtime\bin\jpackage.dll');
+    Files.Append(Path+'\runtime\bin\jpeg.dll');
+    Files.Append(Path+'\runtime\bin\jsdt.dll');
+    Files.Append(Path+'\runtime\bin\jsound.dll');
+    Files.Append(Path+'\runtime\bin\jsoundds.dll');
+    Files.Append(Path+'\runtime\bin\kcms.dll');
+    Files.Append(Path+'\runtime\bin\lcms.dll');
+    Files.Append(Path+'\runtime\bin\le.dll');
+    Files.Append(Path+'\runtime\bin\management.dll');
+    Files.Append(Path+'\runtime\bin\management_agent.dll');
+    Files.Append(Path+'\runtime\bin\management_ext.dll');
+    Files.Append(Path+'\runtime\bin\mlib_image.dll');
+    Files.Append(Path+'\runtime\bin\msvcp140.dll');
+    Files.Append(Path+'\runtime\bin\msvcr100.dll');
+    Files.Append(Path+'\runtime\bin\net.dll');
+    Files.Append(Path+'\runtime\bin\nio.dll');
+    Files.Append(Path+'\runtime\bin\npt.dll');
+    Files.Append(Path+'\runtime\bin\plugin2\msvcr100.dll');
+    Files.Append(Path+'\runtime\bin\plugin2\npjp2.dll');
+    Files.Append(Path+'\runtime\bin\prefs.dll');
+    Files.Append(Path+'\runtime\bin\prism_common.dll');
+    Files.Append(Path+'\runtime\bin\prism_d3d.dll');
+    Files.Append(Path+'\runtime\bin\prism_sw.dll');
+    Files.Append(Path+'\runtime\bin\resource.dll');
+    Files.Append(Path+'\runtime\bin\rmi.dll');
+    Files.Append(Path+'\runtime\bin\server\jvm.dll');
+    Files.Append(Path+'\runtime\bin\splashscreen.dll');
+    Files.Append(Path+'\runtime\bin\sspi_bridge.dll');
+    Files.Append(Path+'\runtime\bin\sunec.dll');
+    Files.Append(Path+'\runtime\bin\sunmscapi.dll');
+    Files.Append(Path+'\runtime\bin\t2k.dll');
+    Files.Append(Path+'\runtime\bin\ucrtbase.dll');
+    Files.Append(Path+'\runtime\bin\unpack.dll');
+    Files.Append(Path+'\runtime\bin\vcruntime140.dll');
+    Files.Append(Path+'\runtime\bin\vcruntime140_1.dll');
+    Files.Append(Path+'\runtime\bin\verify.dll');
+    Files.Append(Path+'\runtime\bin\w2k_lsa_auth.dll');
+    Files.Append(Path+'\runtime\bin\windowsaccessbridge-64.dll');
+    Files.Append(Path+'\runtime\bin\zip.dll');
+    Files.Append(Path+'\runtime\conf\logging.properties');
+    Files.Append(Path+'\runtime\conf\management\jmxremote.access');
+    Files.Append(Path+'\runtime\conf\management\jmxremote.password.template');
+    Files.Append(Path+'\runtime\conf\management\management.properties');
+    Files.Append(Path+'\runtime\conf\net.properties');
+    Files.Append(Path+'\runtime\conf\security\java.policy');
+    Files.Append(Path+'\runtime\conf\security\java.security');
+    Files.Append(Path+'\runtime\conf\security\policy\README.txt');
+    Files.Append(Path+'\runtime\conf\security\policy\limited\default_US_export.policy');
+    Files.Append(Path+'\runtime\conf\security\policy\limited\default_local.policy');
+    Files.Append(Path+'\runtime\conf\security\policy\limited\exempt_local.policy');
+    Files.Append(Path+'\runtime\conf\security\policy\unlimited\default_US_export.policy');
+    Files.Append(Path+'\runtime\conf\security\policy\unlimited\default_local.policy');
+    Files.Append(Path+'\runtime\conf\sound.properties');
+    Files.Append(Path+'\runtime\legal\java.base\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.base\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.base\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.base\aes.md');
+    Files.Append(Path+'\runtime\legal\java.base\asm.md');
+    Files.Append(Path+'\runtime\legal\java.base\c-libutl.md');
+    Files.Append(Path+'\runtime\legal\java.base\cldr.md');
+    Files.Append(Path+'\runtime\legal\java.base\icu.md');
+    Files.Append(Path+'\runtime\legal\java.base\public_suffix.md');
+    Files.Append(Path+'\runtime\legal\java.base\unicode.md');
+    Files.Append(Path+'\runtime\legal\java.base\zlib.md');
+    Files.Append(Path+'\runtime\legal\java.compiler\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.compiler\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.compiler\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.datatransfer\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.datatransfer\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.datatransfer\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.desktop\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.desktop\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.desktop\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.desktop\colorimaging.md');
+    Files.Append(Path+'\runtime\legal\java.desktop\freetype.md');
+    Files.Append(Path+'\runtime\legal\java.desktop\giflib.md');
+    Files.Append(Path+'\runtime\legal\java.desktop\harfbuzz.md');
+    Files.Append(Path+'\runtime\legal\java.desktop\jpeg.md');
+    Files.Append(Path+'\runtime\legal\java.desktop\lcms.md');
+    Files.Append(Path+'\runtime\legal\java.desktop\libpng.md');
+    Files.Append(Path+'\runtime\legal\java.desktop\mesa3d.md');
+    Files.Append(Path+'\runtime\legal\java.instrument\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.instrument\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.instrument\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.logging\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.logging\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.logging\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.management.rmi\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.management.rmi\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.management.rmi\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.management\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.management\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.management\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.naming\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.naming\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.naming\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.net.http\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.net.http\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.net.http\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.prefs\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.prefs\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.prefs\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.rmi\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.rmi\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.rmi\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.scripting\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.scripting\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.scripting\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.security.jgss\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.security.jgss\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.security.jgss\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.security.sasl\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.security.sasl\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.security.sasl\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.smartcardio\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.smartcardio\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.smartcardio\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.sql.rowset\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.sql.rowset\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.sql.rowset\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.sql\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.sql\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.sql\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.transaction.xa\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.transaction.xa\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.transaction.xa\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.xml.crypto\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.xml.crypto\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.xml.crypto\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.xml.crypto\santuario.md');
+    Files.Append(Path+'\runtime\legal\java.xml\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\java.xml\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\java.xml\LICENSE');
+    Files.Append(Path+'\runtime\legal\java.xml\bcel.md');
+    Files.Append(Path+'\runtime\legal\java.xml\dom.md');
+    Files.Append(Path+'\runtime\legal\java.xml\jcup.md');
+    Files.Append(Path+'\runtime\legal\java.xml\xalan.md');
+    Files.Append(Path+'\runtime\legal\java.xml\xerces.md');
+    Files.Append(Path+'\runtime\legal\jdk.accessibility\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.accessibility\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.accessibility\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.attach\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.attach\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.attach\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.charsets\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.charsets\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.charsets\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.compiler\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.compiler\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.compiler\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.cryptoki\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.cryptoki\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.cryptoki\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.cryptoki\pkcs11cryptotoken.md');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.cryptoki\pkcs11wrapper.md');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.ec\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.ec\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.ec\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.mscapi\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.mscapi\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.crypto.mscapi\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.dynalink\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.dynalink\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.dynalink\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.dynalink\dynalink.md');
+    Files.Append(Path+'\runtime\legal\jdk.editpad\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.editpad\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.editpad\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.httpserver\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.httpserver\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.httpserver\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.incubator.foreign\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.incubator.foreign\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.incubator.foreign\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.incubator.vector\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.incubator.vector\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.incubator.vector\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.internal.ed\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.internal.ed\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.internal.ed\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.internal.jvmstat\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.internal.jvmstat\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.internal.jvmstat\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.internal.le\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.internal.le\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.internal.le\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.internal.le\jline.md');
+    Files.Append(Path+'\runtime\legal\jdk.internal.opt\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.internal.opt\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.internal.opt\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.internal.opt\jopt-simple.md');
+    Files.Append(Path+'\runtime\legal\jdk.jartool\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jartool\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jartool\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.javadoc\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.javadoc\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.javadoc\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.javadoc\jquery.md');
+    Files.Append(Path+'\runtime\legal\jdk.javadoc\jqueryUI.md');
+    Files.Append(Path+'\runtime\legal\jdk.jconsole\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jconsole\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jconsole\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jdeps\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jdeps\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jdeps\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jdi\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jdi\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jdi\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jdwp.agent\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jdwp.agent\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jdwp.agent\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jfr\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jfr\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jfr\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jlink\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jlink\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jlink\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jpackage\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jpackage\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jpackage\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jshell\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jshell\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jshell\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jsobject\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jsobject\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jsobject\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.jstatd\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.jstatd\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.jstatd\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.localedata\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.localedata\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.localedata\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.localedata\cldr.md');
+    Files.Append(Path+'\runtime\legal\jdk.localedata\thaidict.md');
+    Files.Append(Path+'\runtime\legal\jdk.management.agent\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.management.agent\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.management.agent\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.management.jfr\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.management.jfr\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.management.jfr\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.management\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.management\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.management\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.naming.dns\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.naming.dns\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.naming.dns\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.naming.rmi\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.naming.rmi\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.naming.rmi\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.net\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.net\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.net\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.nio.mapmode\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.nio.mapmode\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.nio.mapmode\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.sctp\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.sctp\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.sctp\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.security.auth\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.security.auth\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.security.auth\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.security.jgss\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.security.jgss\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.security.jgss\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.unsupported.desktop\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.unsupported.desktop\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.unsupported.desktop\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.unsupported\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.unsupported\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.unsupported\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.xml.dom\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.xml.dom\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.xml.dom\LICENSE');
+    Files.Append(Path+'\runtime\legal\jdk.zipfs\ADDITIONAL_LICENSE_INFO');
+    Files.Append(Path+'\runtime\legal\jdk.zipfs\ASSEMBLY_EXCEPTION');
+    Files.Append(Path+'\runtime\legal\jdk.zipfs\LICENSE');
+    Files.Append(Path+'\runtime\lib\accessibility.properties');
+    Files.Append(Path+'\runtime\lib\calendars.properties');
+    Files.Append(Path+'\runtime\lib\charsets.jar');
+    Files.Append(Path+'\runtime\lib\classlist');
+    Files.Append(Path+'\runtime\lib\cmm\CIEXYZ.pf');
+    Files.Append(Path+'\runtime\lib\cmm\GRAY.pf');
+    Files.Append(Path+'\runtime\lib\cmm\LINEAR_RGB.pf');
+    Files.Append(Path+'\runtime\lib\cmm\PYCC.pf');
+    Files.Append(Path+'\runtime\lib\cmm\sRGB.pf');
+    Files.Append(Path+'\runtime\lib\content-types.properties');
+    Files.Append(Path+'\runtime\lib\ct.sym');
+    Files.Append(Path+'\runtime\lib\currency.data');
+    Files.Append(Path+'\runtime\lib\ext\access-bridge-32.jar');
+    Files.Append(Path+'\runtime\lib\ext\access-bridge.jar');
+    Files.Append(Path+'\runtime\lib\ext\cldrdata.jar');
+    Files.Append(Path+'\runtime\lib\ext\dnsns.jar');
+    Files.Append(Path+'\runtime\lib\ext\jaccess.jar');
+    Files.Append(Path+'\runtime\lib\ext\jfxrt.jar');
+    Files.Append(Path+'\runtime\lib\ext\localedata.jar');
+    Files.Append(Path+'\runtime\lib\ext\meta-index');
+    Files.Append(Path+'\runtime\lib\ext\nashorn.jar');
+    Files.Append(Path+'\runtime\lib\ext\sunec.jar');
+    Files.Append(Path+'\runtime\lib\ext\sunjce_provider.jar');
+    Files.Append(Path+'\runtime\lib\ext\sunmscapi.jar');
+    Files.Append(Path+'\runtime\lib\ext\sunpkcs11.jar');
+    Files.Append(Path+'\runtime\lib\ext\zipfs.jar');
+    Files.Append(Path+'\runtime\lib\flavormap.properties');
+    Files.Append(Path+'\runtime\lib\fontconfig.bfc');
+    Files.Append(Path+'\runtime\lib\fontconfig.properties.src');
+    Files.Append(Path+'\runtime\lib\fonts\LucidaBrightDemiBold.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\LucidaBrightDemiItalic.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\LucidaBrightItalic.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\LucidaBrightRegular.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\LucidaSansDemiBold.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\LucidaSansRegular.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\LucidaTypewriterBold.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\LucidaTypewriterRegular.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\fallback\unifont-12.0.01.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\fallback\unifont_LICENSE.txt');
+    Files.Append(Path+'\runtime\lib\fonts\fallback\unifont_csur-12.0.01.ttf');
+    Files.Append(Path+'\runtime\lib\fonts\fallback\unifont_upper-12.0.01.ttf');
+    Files.Append(Path+'\runtime\lib\hijrah-config-umalqura.properties');
+    Files.Append(Path+'\runtime\lib\i386\jvm.cfg');
+    Files.Append(Path+'\runtime\lib\images\cursors\cursors.properties');
+    Files.Append(Path+'\runtime\lib\images\cursors\invalid32x32.gif');
+    Files.Append(Path+'\runtime\lib\images\cursors\win32_CopyDrop32x32.gif');
+    Files.Append(Path+'\runtime\lib\images\cursors\win32_CopyNoDrop32x32.gif');
+    Files.Append(Path+'\runtime\lib\images\cursors\win32_LinkDrop32x32.gif');
+    Files.Append(Path+'\runtime\lib\images\cursors\win32_LinkNoDrop32x32.gif');
+    Files.Append(Path+'\runtime\lib\images\cursors\win32_MoveDrop32x32.gif');
+    Files.Append(Path+'\runtime\lib\images\cursors\win32_MoveNoDrop32x32.gif');
+    Files.Append(Path+'\runtime\lib\javafx.properties');
+    Files.Append(Path+'\runtime\lib\javaws.jar');
+    Files.Append(Path+'\runtime\lib\jawt.lib');
+    Files.Append(Path+'\runtime\lib\jce.jar');
+    Files.Append(Path+'\runtime\lib\jfr.jar');
+    Files.Append(Path+'\runtime\lib\jfr\default.jfc');
+    Files.Append(Path+'\runtime\lib\jfr\profile.jfc');
+    Files.Append(Path+'\runtime\lib\jfxswt.jar');
+    Files.Append(Path+'\runtime\lib\jrt-fs.jar');
+    Files.Append(Path+'\runtime\lib\jsse.jar');
+    Files.Append(Path+'\runtime\lib\jvm.cfg');
+    Files.Append(Path+'\runtime\lib\jvm.hprof.txt');
+    Files.Append(Path+'\runtime\lib\jvm.lib');
+    Files.Append(Path+'\runtime\lib\logging.properties');
+    Files.Append(Path+'\runtime\lib\management-agent.jar');
+    Files.Append(Path+'\runtime\lib\management\jmxremote.access');
+    Files.Append(Path+'\runtime\lib\management\jmxremote.password.template');
+    Files.Append(Path+'\runtime\lib\management\management.properties');
+    Files.Append(Path+'\runtime\lib\management\snmp.acl.template');
+    Files.Append(Path+'\runtime\lib\meta-index');
+    Files.Append(Path+'\runtime\lib\modules');
+    Files.Append(Path+'\runtime\lib\net.properties');
+    Files.Append(Path+'\runtime\lib\plugin.jar');
+    Files.Append(Path+'\runtime\lib\psfont.properties.ja');
+    Files.Append(Path+'\runtime\lib\psfontj2d.properties');
+    Files.Append(Path+'\runtime\lib\resources.jar');
+    Files.Append(Path+'\runtime\lib\rt.jar');
+    Files.Append(Path+'\runtime\lib\security\blacklist');
+    Files.Append(Path+'\runtime\lib\security\blacklisted.certs');
+    Files.Append(Path+'\runtime\lib\security\cacerts');
+    Files.Append(Path+'\runtime\lib\security\default.policy');
+    Files.Append(Path+'\runtime\lib\security\java.policy');
+    Files.Append(Path+'\runtime\lib\security\java.security');
+    Files.Append(Path+'\runtime\lib\security\javaws.policy');
+    Files.Append(Path+'\runtime\lib\security\policy\limited\US_export_policy.jar');
+    Files.Append(Path+'\runtime\lib\security\policy\limited\local_policy.jar');
+    Files.Append(Path+'\runtime\lib\security\policy\unlimited\US_export_policy.jar');
+    Files.Append(Path+'\runtime\lib\security\policy\unlimited\local_policy.jar');
+    Files.Append(Path+'\runtime\lib\security\public_suffix_list.dat');
+    Files.Append(Path+'\runtime\lib\security\trusted.libraries');
+    Files.Append(Path+'\runtime\lib\sound.properties');
+    Files.Append(Path+'\runtime\lib\tzdb.dat');
+    Files.Append(Path+'\runtime\lib\tzmappings');
+    Files.Append(Path+'\runtime\release');
+    Files.Append(Path+'\ucrtbase.dll');
+    Files.Append(Path+'\vcruntime140.dll');
+
+    Result := Files;
+end;
+
+function GetRuntimeFolders(): TStrings;
+var
+  Folders : TStrings;
+  Path : String;
+begin
+    Path := ExpandConstant('{app}');
+
+    Folders := TStringList.Create;
+    Folders.Append(Path+'\runtime\lib\security\policy\unlimited');
+    Folders.Append(Path+'\runtime\lib\security\policy\limited');
+    Folders.Append(Path+'\runtime\lib\security\policy');
+    Folders.Append(Path+'\runtime\lib\security');
+    Folders.Append(Path+'\runtime\lib\management');
+    Folders.Append(Path+'\runtime\lib\jfr');
+    Folders.Append(Path+'\runtime\lib\images\cursors');
+    Folders.Append(Path+'\runtime\lib\images');
+    Folders.Append(Path+'\runtime\lib\i386');
+    Folders.Append(Path+'\runtime\lib\fonts\fallback');
+    Folders.Append(Path+'\runtime\lib\fonts');
+    Folders.Append(Path+'\runtime\lib\ext');
+    Folders.Append(Path+'\runtime\lib\cmm');
+    Folders.Append(Path+'\runtime\lib');
+    Folders.Append(Path+'\runtime\legal\jdk.zipfs');
+    Folders.Append(Path+'\runtime\legal\jdk.xml.dom');
+    Folders.Append(Path+'\runtime\legal\jdk.unsupported.desktop');
+    Folders.Append(Path+'\runtime\legal\jdk.unsupported');
+    Folders.Append(Path+'\runtime\legal\jdk.security.jgss');
+    Folders.Append(Path+'\runtime\legal\jdk.security.auth');
+    Folders.Append(Path+'\runtime\legal\jdk.sctp');
+    Folders.Append(Path+'\runtime\legal\jdk.nio.mapmode');
+    Folders.Append(Path+'\runtime\legal\jdk.net');
+    Folders.Append(Path+'\runtime\legal\jdk.naming.rmi');
+    Folders.Append(Path+'\runtime\legal\jdk.naming.dns');
+    Folders.Append(Path+'\runtime\legal\jdk.management.jfr');
+    Folders.Append(Path+'\runtime\legal\jdk.management.agent');
+    Folders.Append(Path+'\runtime\legal\jdk.management');
+    Folders.Append(Path+'\runtime\legal\jdk.localedata');
+    Folders.Append(Path+'\runtime\legal\jdk.jstatd');
+    Folders.Append(Path+'\runtime\legal\jdk.jsobject');
+    Folders.Append(Path+'\runtime\legal\jdk.jshell');
+    Folders.Append(Path+'\runtime\legal\jdk.jpackage');
+    Folders.Append(Path+'\runtime\legal\jdk.jlink');
+    Folders.Append(Path+'\runtime\legal\jdk.jfr');
+    Folders.Append(Path+'\runtime\legal\jdk.jdwp.agent');
+    Folders.Append(Path+'\runtime\legal\jdk.jdi');
+    Folders.Append(Path+'\runtime\legal\jdk.jdeps');
+    Folders.Append(Path+'\runtime\legal\jdk.jconsole');
+    Folders.Append(Path+'\runtime\legal\jdk.javadoc');
+    Folders.Append(Path+'\runtime\legal\jdk.jartool');
+    Folders.Append(Path+'\runtime\legal\jdk.internal.opt');
+    Folders.Append(Path+'\runtime\legal\jdk.internal.le');
+    Folders.Append(Path+'\runtime\legal\jdk.internal.jvmstat');
+    Folders.Append(Path+'\runtime\legal\jdk.internal.ed');
+    Folders.Append(Path+'\runtime\legal\jdk.incubator.vector');
+    Folders.Append(Path+'\runtime\legal\jdk.incubator.foreign');
+    Folders.Append(Path+'\runtime\legal\jdk.httpserver');
+    Folders.Append(Path+'\runtime\legal\jdk.editpad');
+    Folders.Append(Path+'\runtime\legal\jdk.dynalink');
+    Folders.Append(Path+'\runtime\legal\jdk.crypto.mscapi');
+    Folders.Append(Path+'\runtime\legal\jdk.crypto.ec');
+    Folders.Append(Path+'\runtime\legal\jdk.crypto.cryptoki');
+    Folders.Append(Path+'\runtime\legal\jdk.compiler');
+    Folders.Append(Path+'\runtime\legal\jdk.charsets');
+    Folders.Append(Path+'\runtime\legal\jdk.attach');
+    Folders.Append(Path+'\runtime\legal\jdk.accessibility');
+    Folders.Append(Path+'\runtime\legal\java.xml.crypto');
+    Folders.Append(Path+'\runtime\legal\java.xml');
+    Folders.Append(Path+'\runtime\legal\java.transaction.xa');
+    Folders.Append(Path+'\runtime\legal\java.sql.rowset');
+    Folders.Append(Path+'\runtime\legal\java.sql');
+    Folders.Append(Path+'\runtime\legal\java.smartcardio');
+    Folders.Append(Path+'\runtime\legal\java.security.sasl');
+    Folders.Append(Path+'\runtime\legal\java.security.jgss');
+    Folders.Append(Path+'\runtime\legal\java.scripting');
+    Folders.Append(Path+'\runtime\legal\java.rmi');
+    Folders.Append(Path+'\runtime\legal\java.prefs');
+    Folders.Append(Path+'\runtime\legal\java.net.http');
+    Folders.Append(Path+'\runtime\legal\java.naming');
+    Folders.Append(Path+'\runtime\legal\java.management.rmi');
+    Folders.Append(Path+'\runtime\legal\java.management');
+    Folders.Append(Path+'\runtime\legal\java.logging');
+    Folders.Append(Path+'\runtime\legal\java.instrument');
+    Folders.Append(Path+'\runtime\legal\java.desktop');
+    Folders.Append(Path+'\runtime\legal\java.datatransfer');
+    Folders.Append(Path+'\runtime\legal\java.compiler');
+    Folders.Append(Path+'\runtime\legal\java.base');
+    Folders.Append(Path+'\runtime\legal');
+    Folders.Append(Path+'\runtime\conf\security\policy\unlimited');
+    Folders.Append(Path+'\runtime\conf\security\policy\limited');
+    Folders.Append(Path+'\runtime\conf\security\policy');
+    Folders.Append(Path+'\runtime\conf\security');
+    Folders.Append(Path+'\runtime\conf\management');
+    Folders.Append(Path+'\runtime\conf');
+    Folders.Append(Path+'\runtime\bin\server');
+    Folders.Append(Path+'\runtime\bin\plugin2');
+    Folders.Append(Path+'\runtime\bin\client');
+    Folders.Append(Path+'\runtime\bin');
+    
+    Result := Folders;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Files : TStrings;
+  Index : Integer;
+  File : String;
+begin
+    Log('Prepare to install..');
+    ConfigFileCheck();
+    Log(Format('Prepare to install.. %d/%d/%d/%d', [ConfigFileChecked, ConfigFileConvert, ConfigFileIsJPackage, DirExists(ExpandConstant('{app}\runtime\lib\ext'))]));
+    Log(ExpandConstant('{app}\runtime\lib\ext'));
+    if ConfigFileChecked and ConfigFileConvert then
+    begin
+        { Delete files related to the runtime, as specified above.
+          
+          This is only done when switching between old (javapackager) and new (jpackage)
+          since not deleting them can cause problems. The files specified are files found
+          in both the old and new runtime combined. They are all specified so that files
+          unrelated to Chatty (even though unlikely to be there) are not deleted.
+        }
+        Files := GetRuntimeFiles();
+        for Index := 0 to Files.Count - 1 do begin
+            File := Files[Index];
+            if FileExists(File) then
+            begin
+                Log('Deleting: '+File);
+                if not DeleteFile(File) then
+                    Log('Failed to delete: '+File);
+            end;
+        end;
+
+        Files := GetRuntimeFolders();
+        for Index := 0 to Files.Count - 1 do begin
+            File := Files[Index];
+            if DirExists(File) then
+            begin
+                Log('Removing: '+File);
+                if not RemoveDir(File) then
+                    Log('Failed to remove: '+File);
+            end;
+        end;
+    end;
+
+    if ConfigFileChecked and ConfigFileIsJPackage and DirExists(ExpandConstant('{app}\runtime\lib\ext')) then
+        MsgBox('Could not remove "runtime\lib\ext", which may cause issues. Please delete manually.' + #13#10#13#10
+            + ExpandConstant('{app}\runtime\lib\ext'), mbInformation, MB_OK);
+end;

@@ -1,0 +1,248 @@
+
+package chatty.gui.components.settings;
+
+import static chatty.gui.components.settings.SettingsDialog.makeGbc;
+import chatty.lang.Language;
+import chatty.util.StringUtil;
+import java.awt.Component;
+import java.awt.FlowLayout;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
+import java.util.Arrays;
+import java.util.function.Function;
+import javax.swing.AbstractButton;
+import javax.swing.BorderFactory;
+import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
+import javax.swing.JComponent;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JRadioButton;
+import javax.swing.border.Border;
+
+/**
+ *
+ * @author tduva
+ */
+public class SettingsUtil {
+    
+    public static void addSubsettings(JCheckBox control, Component... subs) {
+        control.addItemListener(e -> {
+            for (Component sub : subs) {
+                if (sub != control) {
+                    sub.setEnabled(control.isSelected() && control.isEnabled());
+                }
+            }
+        });
+        control.addPropertyChangeListener("enabled", e -> {
+            for (Component sub : subs) {
+                if (sub != control) {
+                    sub.setEnabled(control.isSelected() && control.isEnabled());
+                }
+            }
+        });
+        for (Component sub : subs) {
+            if (sub != control) {
+                sub.setEnabled(false);
+            }
+        }
+    }
+    
+    public static void addSubsettings(JRadioButton[] radioButtons, Component... subs) {
+        Runnable update = () -> {
+            boolean enabled = false;
+            for (JRadioButton button : radioButtons) {
+                if (button.isSelected() && button.isEnabled()) {
+                    enabled = true;
+                    break;
+                }
+            }
+            for (Component comp : subs) {
+                if (!Arrays.asList(radioButtons).contains(comp)) {
+                    comp.setEnabled(enabled);
+                }
+            }
+        };
+        for (JRadioButton button : radioButtons) {
+            button.addItemListener(e -> {
+                update.run();
+            });
+        }
+        for (JRadioButton button : radioButtons) {
+            button.addPropertyChangeListener("enabled", e -> {
+                update.run();
+            });
+        }
+        update.run();
+    }
+
+    public static void addSubsettings(ComboStringSetting control, Function<String, Boolean> req, Component... subs) {
+        control.addSettingChangeListener(c -> {
+            String selected = control.getSettingValue();
+            for (Component sub : subs) {
+                sub.setEnabled(req.apply(selected));
+            }
+        });
+        for (Component sub : subs) {
+            sub.setEnabled(false);
+        }
+    }
+    
+    public static void addSubsettings(ComboLongSetting control, Function<Long, Boolean> req, Component... subs) {
+        control.addSettingChangeListener(c -> {
+            Long selected = control.getSettingValue();
+            for (Component sub : subs) {
+                sub.setEnabled(req.apply(selected));
+            }
+        });
+        for (Component sub : subs) {
+            sub.setEnabled(false);
+        }
+    }
+    
+    public static String addTooltipLinebreaks(String tooltipText) {
+        if (tooltipText != null && !tooltipText.isEmpty()) {
+            tooltipText = "<html><body>"+StringUtil.addLinebreaks(tooltipText, 70, true);
+        }
+        return tooltipText;
+    }
+    
+    public static JPanel createStandardGapPanel() {
+        JPanel result = new JPanel();
+        result.setLayout(new FlowLayout(FlowLayout.CENTER, 5, 4));
+        return result;
+    }
+    
+    /**
+     * Remove sections in the input (usually HTML), based on the given type.
+     *
+     * <p>
+     * Sections to remove must be enclosed in one of the two ways:
+     * <ul>
+     * <li>{@code <!--#START:<type>#-->} to {@code <!--#END:<type>#-->} (all
+     * sections that don't match the given type are removed)
+     * <li>{@code <!--#START:!<type>#-->} to {@code <!--#END:!<type>#-->} (all
+     * sections that match the given type are removed)
+     * </ul>
+     * <p>
+     * Not necessarily designed for overlapping or inside of eachother sections,
+     * but those could still work to some extend.
+     *
+     * @param input The text to modify
+     * @param type The type
+     * @return The modified text
+     */
+    public static String removeHtmlConditions(String input, String type) {
+        input = input.replaceAll(String.format(
+                "(?s)<!--#START:(?!%1$s(?!\\w+))\\w+#-->(.*?)<!--#END:(?!%1$s(?!\\w+))\\w+#-->",
+                type), "");
+        input = input.replaceAll(String.format(
+                "(?s)<!--#START:!%1$s#-->(.*?)<!--#END:!%1$s#-->",
+                type), "");
+        return input;
+    }
+    
+    public static String getInfo(String file, String type) {
+        String html = StringUtil.stringFromInputStream(SettingsUtil.class.getResourceAsStream(file));
+        if (type != null) {
+            return removeHtmlConditions(html, type);
+        }
+        return html;
+    }
+    
+    public static JLabel createLabel(String settingName) {
+        return createLabel(settingName, false);
+    }
+    
+    public static JLabel createLabel(String settingName, boolean info) {
+        String baseKey = "settings.label."+settingName;
+        if (settingName.contains(".")) {
+            baseKey = settingName;
+        }
+        String text = Language.getString(baseKey);
+        String tip = Language.getString(baseKey+".tip", false);
+        JLabel label;
+        if (info) {
+            label = new JLabel(SettingConstants.HTML_PREFIX+text);
+        } else {
+            label = new JLabel(text);
+        }
+        label.setToolTipText(SettingsUtil.addTooltipLinebreaks(tip));
+        return label;
+    }
+    
+    public static void addLabeledComponent(JPanel panel, String labelSettingName, int x, int y, int w, int labelAlign, JComponent component) {
+        addLabeledComponent(panel, labelSettingName, x, y, w, labelAlign, component, false);
+    }
+    
+    public static void addLabeledComponent(JPanel panel, String labelSettingName, int x, int y, int w, int labelAlign, JComponent component, boolean stretchComponent) {
+        addLabeledComponent(panel, labelSettingName, x, y, w, labelAlign, component, stretchComponent, false);
+    }
+    
+    public static void addLabeledComponent(JPanel panel, String labelSettingName, int x, int y, int w, int labelAlign, JComponent component, boolean stretchComponent, boolean sub) {
+        JLabel label = createLabel(labelSettingName);
+        label.setLabelFor(component);
+        panel.add(label, SettingsDialog.makeGbcSub(x, y, 1, 1, labelAlign));
+        GridBagConstraints gbc = SettingsDialog.makeGbc(x + 1, y, w, 1, GridBagConstraints.WEST);
+        if (stretchComponent) {
+            gbc.fill = GridBagConstraints.BOTH;
+        }
+        panel.add(component, gbc);
+    }
+    
+    public static void setTextAndTooltip(AbstractButton button, String langKey) {
+        button.setText(Language.getString(langKey));
+        button.setToolTipText(SettingsUtil.addTooltipLinebreaks(Language.getString(langKey+".tip")));
+    }
+    
+    public static void addStandardSetting(JPanel panel, String name, int y, JComponent component) {
+        addStandardSetting(panel, name, y, component, false);
+    }
+    
+    public static void addStandardSubSetting(JPanel panel, String name, int y, JComponent component) {
+        addStandardSetting(panel, name, y, component, true);
+    }
+    
+    public static void addStandardSetting(JPanel panel, String name, int y, JComponent component, boolean sub) {
+        if (component instanceof JCheckBox) {
+            if (sub) {
+                panel.add(component, SettingsDialog.makeGbcSub(0, y, 2, 1, GridBagConstraints.WEST));
+            }
+            else {
+                panel.add(component, SettingsDialog.makeGbc(0, y, 2, 1, GridBagConstraints.WEST));
+            }
+        }
+        else {
+            addLabeledComponent(panel, name, 0, y, 1, GridBagConstraints.EAST, component, false, sub);
+        }
+    }
+    
+    public static JPanel createPanel(String settingName, JComponent... settingComponent) {
+        JPanel panel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = makeGbc(0, 0, 1, 1);
+        // Make sure to only have space between the two components, since other
+        // spacing will be added when this panel is added to the layout
+        gbc.insets = new Insets(0, 0, 0, gbc.insets.right);
+        panel.add(createLabel(settingName), gbc);
+        gbc = makeGbc(1, 0, 1, 1);
+        gbc.insets = new Insets(0, gbc.insets.left, 0, 0);
+        for (JComponent comp : settingComponent) {
+            panel.add(comp, gbc);
+            gbc.gridx++;
+        }
+        return panel;
+    }
+    
+    private static final Border PADDING = BorderFactory.createEmptyBorder(5, 5, 5, 5);
+    
+    public static JPanel topAlign(JPanel panel, int y) {
+        // Fill up remaining space to top-align components
+        GridBagConstraints gbc = SettingsDialog.makeGbc(0, y, 1, 1, GridBagConstraints.WEST);
+        gbc.weighty = 1;
+        panel.add(new JLabel(), gbc);
+        panel.setBorder(PADDING);
+        return panel;
+    }
+    
+}

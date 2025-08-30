@@ -1,0 +1,333 @@
+import java.util.regex.Matcher
+
+plugins {
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id "org.gradle.crypto.checksum" version "1.4.0"
+    id "java"
+}
+
+// This seems to fix non-ASCII characters in the code not appearing correctly after compiling
+compileJava.options.encoding = 'UTF-8'
+compileTestJava.options.encoding = 'UTF-8'
+
+sourceCompatibility = 1.8
+
+// Tells Netbeans what the main class is
+ext.mainClass = 'chatty.Chatty'
+
+archivesBaseName = 'Chatty'
+
+repositories {
+    mavenCentral()
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src']
+        }
+        resources {
+            srcDirs = ['src']
+        }
+    }
+    test {
+        java {
+            srcDirs = ['test']
+        }
+        resources {
+            srcDirs = ['test']
+        }
+    }
+}
+
+// Method that gets the version name from Chatty.java. It's defined after the sourceSets block because it uses its path
+def extractVersion = { ->
+    File chattyClassFile = new File((File) sourceSets.main.java.srcDirs.first(), 'chatty/Chatty.java');
+
+    // Use this regex to extract the version from the file
+    Matcher matcher = chattyClassFile.text =~ /(?m)^\s*public static final String VERSION = "(.*?)";/
+
+    // From the first matching line, return the first capture (the version)
+    return matcher[0][1]
+}
+
+version = extractVersion()
+
+dependencies {
+    implementation fileTree(dir: 'assets/lib', include: ['*.jar'])
+    implementation 'net.java.dev.jna:jna:5.12.1'
+    implementation 'net.java.dev.jna:jna-platform:5.12.1'
+    implementation 'com.formdev:flatlaf:3.2.5'
+
+    testImplementation 'junit:junit:4.12'
+}
+
+// The wrapper is a small batch/bash script that can be used to run Gradle on machines where it hasn't been directly
+// installed. It allows you to specify the project's Gradle version for everyone that has checked out the project.
+wrapper {
+    gradleVersion = '6.5.1'
+}
+
+jar {
+    manifest {
+        attributes(
+                'Main-Class': mainClass,
+		//'SplashScreen-Image': 'chatty/splash/splash.png'
+        )
+    }
+}
+
+// Builds a jar that includes not only the compiled files from this project, but also the .class files from the
+// dependencies. This removes the need for a separate 'libs' directory when Chatty is installed.
+shadowJar {
+    // A suffix for the release jar name. By default this is '-all', which gives a name like 'Chatty-v0.8.3b3-all.jar'
+    archiveClassifier = ''
+    archiveVersion = ''
+
+    manifest {
+        inheritFrom project.tasks.jar.manifest
+    }
+}
+
+// The following are a series of tasks for building the release artifacts. They are bundled into zip files and placed
+// in the 'build/releases' directory.
+
+def releasesDir = new File(buildDir, 'releases')
+
+task allPlatformsZip(type: Zip, group: 'build') {
+    dependsOn shadowJar
+
+    from tasks.shadowJar.archivePath
+    from ('assets') {
+        exclude 'lib'
+        exclude 'linux'
+    }
+
+    destinationDirectory = releasesDir
+    archiveFileName = "${archivesBaseName}_${project.version}.zip"
+}
+
+// Builds all the release zips
+task releaseZips(group: 'build') {
+    dependsOn allPlatformsZip
+}
+
+// Builds the full project, runs the unit tests and packages the release zips.
+task release(group: 'build') {
+    dependsOn releaseZips, build
+}
+
+//--------
+// Windows
+//--------
+
+def windowsBundleTarget = new File(buildDir, 'javapackager')
+def windowsBundleSource = new File(windowsBundleTarget, 'bundles/Chatty')
+def standaloneSuffix = "_legacy";
+def isJPackage = false;
+if (project.hasProperty('jpackagePath')) {
+    windowsBundleTarget = new File(buildDir, 'jpackage')
+    windowsBundleSource = new File(windowsBundleTarget, 'Chatty')
+    standaloneSuffix = "";
+    isJPackage = true;
+}
+
+ext.standaloneSuffix = standaloneSuffix
+ext.isJPackageString = isJPackage ? "1" : "0";
+
+task javapackagerBuild(type: Exec, group: 'build') {
+    dependsOn shadowJar
+
+    doFirst {
+        if (!project.hasProperty('javapackagerPath') && !project.hasProperty('jpackagePath')) {
+            throw new GradleException('Path to javapackager.exe must be defined with -PjavapackagerPath=<path>')
+        }
+    }
+    if (project.hasProperty('jpackagePath')) {
+        doFirst {
+            println 'Using jpackagePath';
+            delete windowsBundleTarget
+	    copy {
+		from tasks.shadowJar.archivePath
+                into new File(windowsBundleTarget, 'input')
+	    }
+        }
+	def command = [jpackagePath,
+		'--type', 'app-image',
+		'-n', 'Chatty',
+		'-i', new File(windowsBundleTarget, 'input'),
+		'-d', windowsBundleTarget,
+		'--main-class', 'chatty.Chatty2',
+		'--main-jar', 'Chatty.jar',
+		'--description', 'Chatty - Twitch Chat Client',
+		'--java-options', '-Xmx600M',
+		'--java-options', '-Dsun.java2d.d3d=false',
+		'--icon', 'assets-bundle/Chatty.ico',
+		'--app-version', project.version.replace("-",".").replace("b","0."),
+		'--arguments', '-abc',
+		'--add-launcher', 'ChattyPortable=assets-bundle/LauncherPortable.properties']
+	commandLine command
+    }
+    else if (project.hasProperty('javapackagerPath')) {
+        doFirst {
+            println 'Using javapackagerPath';
+            delete windowsBundleTarget
+        }
+        def command = [javapackagerPath, '-deploy', '-native', 'image', '-srcfiles', tasks.shadowJar.archivePath, '-appclass', 'chatty.Chatty', '-outdir', windowsBundleTarget, '-outfile', 'Chatty']
+        command << "-Bicon=assets-bundle/Chatty.ico"
+        command << "-BappVersion=${project.version}"
+        command << "-BjvmProperties=sun.java2d.d3d=false"
+        command << "-BjvmOptions=-Xmx400M"
+        if (project.hasProperty('jrePath')) {
+            command << "-Bruntime=${jrePath}"
+        }
+        commandLine command
+    }
+}
+
+def addApplicationManifest(target) {
+    // Exe files output by packager appear to be readonly
+    ant.attrib(readonly: false) {
+        fileset(file: target)
+    }
+    exec {
+        def command = [mtPath, '-nologo', '-manifest', new File('assets-bundle/Chatty.exe.manifest'), '-outputresource:'+target]
+        commandLine command
+    }
+}
+
+task javapackagerManifest(group: 'build') {
+    dependsOn javapackagerBuild
+    doLast {
+        if (project.hasProperty('mtPath')) {
+            addApplicationManifest(new File(windowsBundleSource, "Chatty.exe"));
+            if (isJPackage) {
+                addApplicationManifest(new File(windowsBundleSource, "ChattyPortable.exe"));
+            }
+        }
+        else {
+            println("Path to mt.exe has to be specified to add an application manifest, skipping..");
+        }
+    }
+}
+
+task javapackager(group: 'build') {
+    dependsOn javapackagerBuild, javapackagerManifest
+}
+
+task windowsZip(type: Zip, group: 'build') {
+    dependsOn javapackager
+
+    from windowsBundleSource
+    from ('assets') {
+        exclude 'lib'
+	into 'app'
+    }
+    from ('assets-bundle/fallback-fonts') {
+        into 'runtime/lib/fonts/fallback'
+    }
+    from 'assets-bundle/readme-bundle.txt'
+
+    destinationDirectory = releasesDir
+    archiveFileName = "${archivesBaseName}_${project.version}_win_standalone${standaloneSuffix}.zip"
+}
+
+task releaseWindows(group: 'build') {
+    dependsOn release, windowsZip
+}
+
+//----------
+// Innosetup
+//----------
+
+def innosetupDir = new File(buildDir, 'innosetup')
+def innosetupDir2 = new File(buildDir, 'innosetup2')
+
+def prepareSetupFile(file, to) {
+    copy {
+            from("setup/"+file) {
+                rename(file, "setup.iss")
+                expand([
+                    applicationVersion: project.version,
+                    code: new File('setup/_functions.iss-part').getText('UTF-8'),
+                    setup: new File('setup/_common.iss-part').getText('UTF-8'),
+                    isJPackage: project.ext.isJPackageString,
+                    standaloneSuffix: project.ext.standaloneSuffix
+                ])
+            }
+            into(to)
+        }
+}
+
+task innosetup(type: Exec, group: 'build') {
+    dependsOn shadowJar
+
+    doFirst {
+        if (!project.hasProperty('innosetupPath')) {
+            throw new GradleException('Path to iscc.exe must be defined with -PinnosetupPath=<path>')
+        }
+	delete innosetupDir
+        innosetupDir.mkdir();
+
+        prepareSetupFile("setup.iss-template", innosetupDir)
+        copy {
+            from(tasks.shadowJar.archivePath)
+            from ('assets') {
+                exclude 'lib'
+    	    }
+            from('assets-bundle/Chatty.ico')
+            into("${innosetupDir}/pack")
+        }
+        def command = [innosetupPath, "/Q", "${innosetupDir}\\setup.iss"]
+        commandLine command
+    }
+}
+
+task innosetupStandalone(type: Exec, group: 'build') {
+    dependsOn javapackager
+
+    doFirst {
+        if (!project.hasProperty('innosetupPath')) {
+            throw new GradleException('Path to iscc.exe must be defined with -PinnosetupPath=<path>')
+        }
+	delete innosetupDir2
+        innosetupDir2.mkdir();
+
+        prepareSetupFile("setup_standalone.iss-template", innosetupDir2)
+        copy {
+            from windowsBundleSource
+            from ('assets') {
+                exclude 'lib'
+	        into 'app'
+            }
+            from ('assets-bundle/fallback-fonts') {
+                into 'runtime/lib/fonts/fallback'
+            }
+            from 'assets-bundle/readme-bundle.txt'
+            into("${innosetupDir2}/pack")
+        }
+        def command = [innosetupPath, "/Q", "${innosetupDir2}\\setup.iss"]
+        commandLine command
+    }
+}
+
+task releaseWinSetups(group: 'build') {
+    dependsOn releaseWindows, innosetup, innosetupStandalone, build
+}
+
+//---------
+// Checksum
+//---------
+
+import org.gradle.crypto.checksum.Checksum
+
+task createChecksums(type: Checksum) {
+    mustRunAfter(allPlatformsZip, windowsZip, releaseWindows, releaseWinSetups)
+
+    files = layout.files { releasesDir.listFiles() }.filter { File f ->
+        f.name.endsWith(".exe") || f.name.endsWith(".zip")
+    }
+    outputDir = new File(releasesDir, "v"+version)
+    algorithm = Checksum.Algorithm.SHA256
+}
+
