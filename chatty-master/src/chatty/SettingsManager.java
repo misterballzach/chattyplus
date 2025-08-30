@@ -817,6 +817,16 @@ public class SettingsManager {
         settings.addBoolean("enableStatusWriter", false);
         settings.addString("statusWriter", "");
         
+        // AI Bot
+        settings.addBoolean("botEnabled", false);
+        settings.addString("geminiApiKey", "");
+        settings.setFile("geminiApiKey", loginFile);
+        settings.addString("botUsername", "");
+        settings.setFile("botUsername", loginFile);
+        settings.addString("botToken", "");
+        settings.setFile("botToken", loginFile);
+        settings.addString("botPersonality", "A helpful and friendly chatbot that is an expert on all things Twitch.");
+
         settings.addMap("rewards", new HashMap(), Setting.STRING);
         
         settings.addBoolean("pronouns", false);

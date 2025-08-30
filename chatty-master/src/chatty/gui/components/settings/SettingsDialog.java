@@ -167,6 +167,7 @@ public class SettingsDialog extends JDialog implements ActionListener {
         NAMES("Names", Language.getString("settings.page.names")),
         MODERATION("Moderation", Language.getString("settings.page.moderation")),
         STREAM("Stream", Language.getString("settings.page.stream")),
+        BOT("AI Bot", Language.getString("settings.page.bot")),
         SIMPLE("Simple Settings", Language.getString("settings.page.simple"));
         
         public final String name;
@@ -227,6 +228,7 @@ public class SettingsDialog extends JDialog implements ActionListener {
             Page.HISTORY,
             Page.STREAM,
             Page.HOTKEYS,
+            Page.BOT,
         }));
         MENU.put(Page.SIMPLE, Arrays.asList(new Page[]{}));
     }
@@ -323,6 +325,7 @@ public class SettingsDialog extends JDialog implements ActionListener {
         panels.put(Page.CHAT, new ChatSettings(this));
         panels.put(Page.NAMES, new NameSettings(this));
         panels.put(Page.STREAM, new StreamSettings(this));
+        panels.put(Page.BOT, new BotSettings(this));
         panels.put(Page.SIMPLE, new SimpleSettings(this));
         
         for (Map.Entry<Page, SettingsPanel> entry : panels.entrySet()) {
