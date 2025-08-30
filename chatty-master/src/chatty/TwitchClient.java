@@ -93,6 +93,8 @@ import chatty.util.api.eventsub.payloads.UserMessageHeldPayload;
 import chatty.util.api.eventsub.payloads.WarningAcknowledgePayload;
 import chatty.util.chatlog.ChatLog;
 import chatty.util.commands.CustomCommand;
+import chatty.util.GeminiHelper;
+import chatty.util.settings.SettingChangeListener;
 import chatty.util.commands.Parameters;
 import chatty.util.history.QueuedMessage;
 import chatty.util.irc.MsgTags;
@@ -151,6 +153,7 @@ public class TwitchClient {
     public final ChatLog chatLog;
     
     private final TwitchConnection c;
+    private TwitchConnection botConnection;
     
     /**
      * Holds the TwitchApi object, which is used to make API requests
@@ -218,8 +221,10 @@ public class TwitchClient {
     public final CustomCommands customCommands;
     public final Commands commands = new Commands();
     private final TimerCommand timerCommand;
+    private Timer botTalkTimer;
     
     private final StreamHighlightHelper streamHighlights;
+    private GeminiHelper geminiHelper;
     
     private final Set<String> refreshRequests = Collections.synchronizedSet(new HashSet<String>());
     
@@ -333,6 +338,7 @@ public class TwitchClient {
         settings.addSettingsListener(new SettingSaveListener());
 
         streamHighlights = new StreamHighlightHelper(settings, api);
+        geminiHelper = new GeminiHelper(settings.getString("geminiApiKey"));
         
         customNames = new CustomNames(settings);
         
@@ -364,6 +370,15 @@ public class TwitchClient {
         c.addChannelStateListener(new ChannelStateUpdater());
         c.setMaxReconnectionAttempts(settings.getLong("maxReconnectionAttempts"));
         
+        botConnection = new TwitchConnection(new BotMessages(), settings, "bot", roomManager);
+        botConnection.setUserSettings(new User.UserSettings(
+                settings.getInt("userDialogMessageLimit"),
+                usercolorManager, addressbook, usericonManager));
+        botConnection.setCustomNamesManager(customNames);
+        botConnection.setBotNameManager(botNameManager);
+        botConnection.addChannelStateListener(new ChannelStateUpdater());
+        botConnection.setMaxReconnectionAttempts(settings.getLong("maxReconnectionAttempts"));
+
         // Uses TwitchConnection
         AccessChecker.setInstance(new AccessChecker(settings, this));
         
@@ -374,6 +389,15 @@ public class TwitchClient {
         streamStatusWriter.setEnabled(settings.getBoolean("enableStatusWriter"));
         settings.addSettingChangeListener(streamStatusWriter);
         
+        settings.addSettingChangeListener(new SettingChangeListener() {
+            @Override
+            public void settingChanged(String setting, int type, Object value) {
+                if (setting.equals("botEnabled")) {
+                    updateBotConnection();
+                }
+            }
+        });
+
         LaF.setLookAndFeel(LaFSettings.fromSettings(settings));
         GuiUtil.addMacKeyboardActions();
         
@@ -389,6 +413,8 @@ public class TwitchClient {
         emotesetManager = new EmotesetManager(api, g, settings);
         g.showGui();
         
+        botTalkTimer = new Timer("BotTalkTimer", true);
+
         autoModCommandHelper = new AutoModCommandHelper(g, api);
         
         timerCommand = new TimerCommand(settings, new TimerCommand.TimerAction() {
@@ -582,6 +608,8 @@ public class TwitchClient {
         if (!customPathsWarning.isEmpty()) {
             SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(g, customPathsWarning));
         }
+
+        updateBotConnection();
     }
     
 
@@ -1015,6 +1043,17 @@ public class TwitchClient {
         }
     }
     
+    private void sendBotMessage(String channel, String text) {
+        if (botConnection.onChannel(channel, true)) {
+            if (botConnection.sendSpamProtectedMessage(channel, text, false)) {
+                User user = botConnection.localUserJoined(channel);
+                g.printMessage(user, text, false);
+            } else {
+                g.printLine("# Bot message not sent to prevent ban: " + text);
+            }
+        }
+    }
+
     /**
      * Check if the message should be sent as a reply.
      * 
@@ -3348,12 +3387,94 @@ public class TwitchClient {
      * 
      * Should run in EDT.
      */
+    public void updateBotConnection() {
+        if (settings.getBoolean("botEnabled")) {
+            connectBot();
+            startBotTalkTimer();
+        } else {
+            disconnectBot();
+            stopBotTalkTimer();
+        }
+    }
+
+    private void startBotTalkTimer() {
+        if (botTalkTimer != null) {
+            botTalkTimer.cancel();
+        }
+        botTalkTimer = new Timer("BotTalkTimer", true);
+        botTalkTimer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                if (botConnection.isOffline()) {
+                    return;
+                }
+
+                for (String channel : c.getOpenChannels()) {
+                    Room room = roomManager.getRoom(channel);
+                    if (room == null) {
+                        continue;
+                    }
+
+                    List<String> recentMessages = new ArrayList<>();
+                    List<User> users = new ArrayList<>(c.users.getUsersByChannel(channel).values());
+                    // Get messages from the last 5 users that talked
+                    int count = 0;
+                    for (int i = users.size() - 1; i >= 0 && count < 5; i--) {
+                        User user = users.get(i);
+                        List<User.Message> messages = user.getMessages();
+                        if (!messages.isEmpty()) {
+                            User.Message lastMessage = messages.get(messages.size() - 1);
+                            if (lastMessage instanceof User.TextMessage) {
+                                recentMessages.add(user.getName() + ": " + ((User.TextMessage) lastMessage).text);
+                                count++;
+                            }
+                        }
+                    }
+
+                    if (recentMessages.size() > 2) { // Only talk if there are more than 2 messages
+                        Collections.reverse(recentMessages);
+                        String prompt = "This is a Twitch chat conversation. Continue the conversation naturally:\n" + String.join("\n", recentMessages);
+                        String personality = settings.getString("botPersonality");
+                        geminiHelper.generateContent(personality, prompt, response -> {
+                            sendBotMessage(channel, response);
+                        });
+                    }
+                }
+            }
+        }, 60 * 1000, 60 * 1000); // Every minute
+    }
+
+    private void stopBotTalkTimer() {
+        if (botTalkTimer != null) {
+            botTalkTimer.cancel();
+            botTalkTimer = null;
+        }
+    }
+
+    private void connectBot() {
+        if (botConnection.isOffline()) {
+            String botUsername = settings.getString("botUsername");
+            String botToken = settings.getString("botToken");
+            if (!botUsername.isEmpty() && !botToken.isEmpty()) {
+                Set<String> channelsToJoin = c.getOpenChannels();
+                botConnection.connect(getServer(), getPorts(), botUsername, "oauth:" + botToken, channelsToJoin.toArray(new String[0]));
+            }
+        }
+    }
+
+    private void disconnectBot() {
+        if (!botConnection.isOffline()) {
+            botConnection.disconnect();
+        }
+    }
+
     public void exit() {
         shuttingDown = true;
         saveSettings(true, false);
         logAllViewerstats();
         Pronouns.instance().saveCache();
         c.disconnect();
+        botConnection.disconnect();
         frankerFaceZ.disconnectWs();
         eventSub.disconnect();
         g.cleanUp();
@@ -3538,6 +3659,16 @@ public class TwitchClient {
 
         @Override
         public void onChannelMessage(User user, String text, boolean action, MsgTags tags) {
+            if (text.startsWith("!ai ")) {
+                // Handle !ai command
+                String prompt = text.substring(4);
+                String personality = settings.getString("botPersonality");
+                geminiHelper.generateContent(personality, prompt, response -> {
+                    sendBotMessage(user.getChannel(), response);
+                });
+                return;
+            }
+
             if (tags.isCustomReward()) {
                 String rewardInfo = (String)settings.mapGet("rewards", tags.getCustomRewardId());
                 String info = String.format("%s redeemed a custom reward (%s)",
@@ -3915,6 +4046,150 @@ public class TwitchClient {
                 eventSub.isConnected() ? "M" : "");
     }
     
+    private class BotMessages implements TwitchConnection.ConnectionListener {
+
+        @Override
+        public void onChannelJoined(User user) {
+        }
+
+        @Override
+        public void onChannelLeft(Room room, boolean closeChannel) {
+        }
+
+        @Override
+        public void onJoin(User user) {
+        }
+
+        @Override
+        public void onPart(User user) {
+        }
+
+        @Override
+        public void onUserUpdated(User user) {
+        }
+
+        @Override
+        public void onChannelMessage(User user, String text, boolean action, MsgTags tags) {
+        }
+
+        @Override
+        public void onNotice(String message) {
+        }
+
+        @Override
+        public void onInfo(Room room, String infoMessage, MsgTags tags) {
+        }
+
+        @Override
+        public void onInfo(String message) {
+        }
+
+        @Override
+        public void onJoinScheduled(Collection<String> channels) {
+        }
+
+        @Override
+        public void onJoinAttempt(Room room) {
+        }
+
+        @Override
+        public void onUserAdded(User user) {
+        }
+
+        @Override
+        public void onUserRemoved(User user) {
+        }
+
+        @Override
+        public void onBan(User user, long duration, String reason, String targetMsgId) {
+        }
+
+        @Override
+        public void onMsgDeleted(User user, String targetMsgId, String msg) {
+        }
+
+        @Override
+        public void onConnectionPrepare(String server) {
+        }
+
+        @Override
+        public void onConnectAttempt(String server, int port, boolean secured) {
+        }
+
+        @Override
+        public void onRegistered() {
+        }
+
+        @Override
+        public void onMod(User user) {
+        }
+
+        @Override
+        public void onUnmod(User user) {
+        }
+
+        @Override
+        public void onDisconnect(int reason, String reasonMessage) {
+        }
+
+        @Override
+        public void onConnectionStateChanged(int state) {
+        }
+
+        @Override
+        public void onEmotesets(String channel, Set<String> emotesets) {
+        }
+
+        @Override
+        public void onConnectError(String message) {
+        }
+
+        @Override
+        public void onJoinError(Set<String> toJoin, String errorChannel, TwitchConnection.JoinError error) {
+        }
+
+        @Override
+        public void onRawReceived(String text) {
+        }
+
+        @Override
+        public void onRawSent(String text) {
+        }
+
+        @Override
+        public void onGlobalInfo(String message) {
+        }
+
+        @Override
+        public void onUserlistCleared(String channel) {
+        }
+
+        @Override
+        public void onChannelCleared(Room room) {
+        }
+
+        @Override
+        public void onWhisper(User user, String message, String emotes) {
+        }
+
+        @Override
+        public void onSubscriberNotification(User user, String text, String message, int months, MsgTags tags) {
+        }
+
+        @Override
+        public void onUsernotice(String type, User user, String text, String message, MsgTags tags) {
+        }
+
+        @Override
+        public void onSpecialMessage(String name, String message) {
+        }
+
+        @Override
+        public void onRoomId(String channel, String id) {
+        }
+
+    }
+
     private class MyWhisperListener implements WhisperListener {
 
         @Override
