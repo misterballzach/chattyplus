@@ -84,15 +84,16 @@ jar {
 // Builds a jar that includes not only the compiled files from this project, but also the .class files from the
 // dependencies. This removes the need for a separate 'libs' directory when Chatty is installed.
 shadowJar {
-    // A suffix for the release jar name. By default this is '-all', which gives a name like 'Chatty-v0.8.3b3-all.jar'
-    archiveClassifier = ''
-    archiveVersion = ''
+    archiveBaseName = 'Chatty'
+    archiveClassifier = null
+    archiveVersion = null
 
     manifest {
         inheritFrom project.tasks.jar.manifest
     }
 
     configurations = [project.configurations.runtimeClasspath]
+    mergeServiceFiles()
 }
 
 // The following are a series of tasks for building the release artifacts. They are bundled into zip files and placed
