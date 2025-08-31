@@ -59,6 +59,8 @@ dependencies {
     implementation 'net.java.dev.jna:jna-platform:5.12.1'
     implementation 'com.formdev:flatlaf:3.2.5'
     implementation 'com.google.cloud:google-cloud-vertexai:1.33.0'
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+    runtimeOnly 'ch.qos.logback:logback-classic:1.4.11'
 
     testImplementation 'junit:junit:4.12'
 }
