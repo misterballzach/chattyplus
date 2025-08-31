@@ -147,7 +147,6 @@ public class MainGui extends JFrame implements Runnable {
     private Channels channels;
     private ConnectionDialog connectionDialog;
     private TokenDialog tokenDialog;
-    private TokenGetDialog tokenGetDialog;
     private DebugWindow debugWindow;
     private UserInfoManager userInfoDialog;
     private About aboutDialog;
@@ -250,7 +249,6 @@ public class MainGui extends JFrame implements Runnable {
         connectionDialog = new ConnectionDialog(this);
         GuiUtil.installEscapeCloseOperation(connectionDialog);
         tokenDialog = new TokenDialog(this);
-        tokenGetDialog = new TokenGetDialog(this);
         userInfoDialog = new UserInfoManager(this, client.settings, contextMenuListener, client.api);
         aboutDialog = new About();
         setHelpWindowIcons();
@@ -1706,9 +1704,6 @@ public class MainGui extends JFrame implements Runnable {
                 tokenDialog.setVisible(false);
             } else if (event.getSource() == tokenDialog.getVerifyTokenButton()) {
                 verifyToken(client.settings.getString("token"));
-            } // Get token Dialog
-            else if (event.getSource() == tokenGetDialog.getCloseButton()) {
-                tokenGetDialogClosed();
             }
         }
         
@@ -5055,44 +5050,15 @@ public class MainGui extends JFrame implements Runnable {
      */
     
     public void webserverStarted() {
-        SwingUtilities.invokeLater(new Runnable() {
-
-            @Override
-            public void run() {
-                if (tokenGetDialog.isVisible()) {
-                    tokenGetDialog.ready();
-                }
-            }
-        });
+        // This is now handled by the Webserver directly updating the dialog
     }
     
     public void webserverError(final String error) {
-        SwingUtilities.invokeLater(new Runnable() {
-
-            @Override
-            public void run() {
-                if (tokenGetDialog.isVisible()) {
-                    tokenGetDialog.error(error);
-                }
-            }
-        });
+        // This is now handled by the Webserver directly updating the dialog
     }
     
     public void webserverTokenReceived(final String token) {
-        SwingUtilities.invokeLater(new Runnable() {
-
-            @Override
-            public void run() {
-                if (tokenGetDialog != null && tokenGetDialog.isVisible()) {
-                    tokenGetDialog.tokenReceived(token);
-                }
-            }
-        });
-    }
-    
-    private void tokenGetDialogClosed() {
-        tokenGetDialog.setVisible(false);
-        client.stopWebserver();
+        // This is now handled by the Webserver directly updating the dialog
     }
     
     /**
@@ -5103,9 +5069,6 @@ public class MainGui extends JFrame implements Runnable {
     private void tokenReceived(String token) {
         client.settings.setString("token", token);
         client.settings.setBoolean("foreignToken", false);
-        if (tokenGetDialog.isVisible()) {
-            tokenGetDialog.tokenReceived();
-        }
         tokenDialog.update("",token);
         updateConnectionDialog(null);
         verifyToken(token);
@@ -5205,7 +5168,7 @@ public class MainGui extends JFrame implements Runnable {
         // Check if a new token was requested (the get token dialog should still
         // be open at this point) If this is wrong, it just displays the wrong
         // text, this shouldn't be used for something critical.
-        boolean getNewLogin = tokenGetDialog.isVisible();
+        boolean getNewLogin = false; // This is now handled by the callback system
         boolean showInDialog = tokenDialog.isVisible();
         boolean changedTokenResponse = token == null
                 ? manuallyChangedToken == null : token.equals(manuallyChangedToken);
@@ -5266,8 +5229,7 @@ public class MainGui extends JFrame implements Runnable {
             manuallyChangedToken = null;
         }
         setTokenScopes(tokenInfo);
-        // Always close the get token dialog, if it's not open, nevermind ;)
-        tokenGetDialog.setVisible(false);
+        // The dialog now closes itself when a token is received.
         // Show result in the token dialog
         tokenDialog.tokenVerified(valid, result);
     }
@@ -5769,12 +5731,6 @@ public class MainGui extends JFrame implements Runnable {
     
     private class MyWindowListener extends WindowAdapter {
 
-        @Override
-        public void windowClosing(WindowEvent e) {
-            if (e.getSource() == tokenGetDialog) {
-                tokenGetDialogClosed();
-            }
-        }
     }
     
     private class MainWindowListener extends WindowAdapter {
