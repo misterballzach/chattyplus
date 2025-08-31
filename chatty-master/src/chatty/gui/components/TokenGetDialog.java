@@ -89,7 +89,7 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
         int x = 0;
         int y = 0;
         for (ScopeCategory cat : TokenInfo.ScopeCategory.values()) {
-            if (bot && cat == ScopeCategory.USER) {
+            if (bot && cat == ScopeCategory.BROADCASTER) {
                 continue;
             }
             JLabel categoryLabel = new JLabel(cat.label);
@@ -104,7 +104,7 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
                 if (scope == Scope.CHAT_EDIT || scope == Scope.CHAT_READ) {
                     checkbox.setEnabled(false);
                 }
-                if (bot && scope.requiresSubscription) {
+                if (bot && scope == Scope.SUBSCRIBERS) {
                     checkbox.setSelected(false);
                 }
                 gbc = makeGridBagConstraints(x, y, 1, 1, GridBagConstraints.WEST);
