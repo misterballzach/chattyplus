@@ -2994,9 +2994,9 @@ public class TwitchClient {
     
     // Webserver
     
-    public void startWebserver() {
+    public void startWebserver(Object dialog) {
         if (webserver == null) {
-            webserver = new Webserver(new WebserverListener());
+            webserver = new Webserver(new WebserverListener(), dialog);
             new Thread(webserver).start();
         }
         else {

@@ -5083,9 +5083,8 @@ public class MainGui extends JFrame implements Runnable {
 
             @Override
             public void run() {
-                Consumer<String> callback = tokenGetDialog.getTokenCallback();
-                if (callback != null) {
-                    callback.accept(token);
+                if (tokenGetDialog != null && tokenGetDialog.isVisible()) {
+                    tokenGetDialog.tokenReceived(token);
                 }
             }
         });
@@ -5112,12 +5111,29 @@ public class MainGui extends JFrame implements Runnable {
         verifyToken(token);
     }
 
+    public interface DialogListener extends LinkLabelListener, ActionListener {
+        public void dialogClosing();
+    }
+
+    public void getToken(boolean bot, Consumer<String> tokenCallback) {
+        TokenGetDialog dialog = new TokenGetDialog(this, null, token -> {
+            client.stopWebserver();
+            if (token != null) {
+                if (bot) {
+                    tokenCallback.accept(token);
+                } else {
+                    tokenReceived(token);
+                }
+            }
+        }, bot);
+        dialog.setLocationRelativeTo(this);
+        dialog.reset();
+        client.startWebserver(dialog);
+        dialog.setVisible(true);
+    }
+
     public void openTokenGetDialog(Consumer<String> callback) {
-        tokenGetDialog.setTokenCallback(callback);
-        tokenGetDialog.setLocationRelativeTo(tokenDialog);
-        tokenGetDialog.reset();
-        client.startWebserver();
-        tokenGetDialog.setVisible(true);
+        getToken(false, callback);
     }
     
     /**

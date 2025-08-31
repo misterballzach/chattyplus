@@ -32,17 +32,16 @@ public class BotSettings extends SettingsPanel {
         credentials.add(botUsername, d.makeGbc(1, 1, 1, 1, GridBagConstraints.WEST));
 
         credentials.add(new JLabel("Bot OAuth Token:"), d.makeGbc(0, 2, 1, 1, GridBagConstraints.EAST));
-        JTextField botToken = d.addSimpleStringSetting("botToken", 20, true);
+        JTextField botToken = d.addSimpleStringSetting("botAccessToken", 20, true);
         credentials.add(botToken, d.makeGbc(1, 2, 1, 1, GridBagConstraints.WEST));
 
         JButton getTokenButton = new JButton("Get Token");
-        getTokenButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                d.getMainGui().openTokenGetDialog(token -> {
-                    botToken.setText(token);
-                });
-            }
+        getTokenButton.addActionListener(e -> {
+            d.getMainGui().getToken(true, token -> {
+                if (token != null) {
+                    d.setStringSetting("botAccessToken", "oauth:" + token);
+                }
+            });
         });
         credentials.add(getTokenButton, d.makeGbc(2, 2, 1, 1, GridBagConstraints.WEST));
 
