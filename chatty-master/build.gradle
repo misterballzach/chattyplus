@@ -10,12 +10,13 @@ plugins {
 compileJava.options.encoding = 'UTF-8'
 compileTestJava.options.encoding = 'UTF-8'
 
-sourceCompatibility = 1.8
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
 
 // Tells Netbeans what the main class is
 ext.mainClass = 'chatty.Chatty'
-
-archivesBaseName = 'Chatty'
 
 repositories {
     mavenCentral()
@@ -102,14 +103,14 @@ def releasesDir = new File(buildDir, 'releases')
 task allPlatformsZip(type: Zip, group: 'build') {
     dependsOn shadowJar
 
-    from tasks.shadowJar.archivePath
+    from tasks.shadowJar.archiveFile.get().asFile
     from ('assets') {
         exclude 'lib'
         exclude 'linux'
     }
 
     destinationDirectory = releasesDir
-    archiveFileName = "${archivesBaseName}_${project.version}.zip"
+    archiveFileName = "${tasks.shadowJar.archiveBaseName.get()}_${project.version}.zip"
 }
 
 // Builds all the release zips
@@ -153,7 +154,7 @@ task javapackagerBuild(type: Exec, group: 'build') {
             println 'Using jpackagePath';
             delete windowsBundleTarget
 	    copy {
-		from tasks.shadowJar.archivePath
+		from tasks.shadowJar.archiveFile.get().asFile
                 into new File(windowsBundleTarget, 'input')
 	    }
         }
@@ -178,7 +179,7 @@ task javapackagerBuild(type: Exec, group: 'build') {
             println 'Using javapackagerPath';
             delete windowsBundleTarget
         }
-        def command = [javapackagerPath, '-deploy', '-native', 'image', '-srcfiles', tasks.shadowJar.archivePath, '-appclass', 'chatty.Chatty', '-outdir', windowsBundleTarget, '-outfile', 'Chatty']
+        def command = [javapackagerPath, '-deploy', '-native', 'image', '-srcfiles', tasks.shadowJar.archiveFile.get().asFile, '-appclass', 'chatty.Chatty', '-outdir', windowsBundleTarget, '-outfile', 'Chatty']
         command << "-Bicon=assets-bundle/Chatty.ico"
         command << "-BappVersion=${project.version}"
         command << "-BjvmProperties=sun.java2d.d3d=false"
@@ -234,7 +235,7 @@ task windowsZip(type: Zip, group: 'build') {
     from 'assets-bundle/readme-bundle.txt'
 
     destinationDirectory = releasesDir
-    archiveFileName = "${archivesBaseName}_${project.version}_win_standalone${standaloneSuffix}.zip"
+    archiveFileName = "${tasks.shadowJar.archiveBaseName.get()}_${project.version}_win_standalone${standaloneSuffix}.zip"
 }
 
 task releaseWindows(group: 'build') {
@@ -276,7 +277,7 @@ task innosetup(type: Exec, group: 'build') {
 
         prepareSetupFile("setup.iss-template", innosetupDir)
         copy {
-            from(tasks.shadowJar.archivePath)
+            from(tasks.shadowJar.archiveFile.get().asFile)
             from ('assets') {
                 exclude 'lib'
     	    }
