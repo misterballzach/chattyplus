@@ -1,4 +1,3 @@
-
 package chatty.gui.components;
 
 import chatty.Helper;
@@ -10,6 +9,7 @@ import chatty.util.MiscUtil;
 import chatty.util.api.TokenInfo;
 import chatty.util.api.TokenInfo.Scope;
 import chatty.util.api.TokenInfo.ScopeCategory;
+import java.awt.Frame;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
@@ -17,6 +17,8 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.ItemEvent;
 import java.awt.event.ItemListener;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -40,7 +42,7 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
     
     private final JTextField urlField = new JTextField(20);
     private final LinkLabel status;
-    private Consumer<String> tokenCallback;
+    private final Consumer<String> tokenCallback;
     private final JButton copyUrl = new JButton(Language.getString("openUrl.button.copy"));
     private final JButton openUrl = new JButton(Language.getString("openUrl.button.open", 1));
     private final JButton close = new JButton(Language.getString("dialog.button.close"));
@@ -49,18 +51,37 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
     
     private String currentUrl = TwitchClient.REQUEST_TOKEN_URL;
     
-    public TokenGetDialog(MainGui owner) {
-        super(owner,"Get login data",true);
+    /**
+     * Create a new dialog.
+     *
+     * @param owner
+     * @param listener
+     * @param tokenCallback The callback to be called when a token is received.
+     * The dialog is automatically closed after the token is received.
+     */
+    public TokenGetDialog(Frame owner, MainGui.DialogListener listener, Consumer<String> tokenCallback, boolean bot) {
+        super(owner,"Get token",true);
+        this.tokenCallback = tokenCallback;
+
         this.setResizable(false);
         this.setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
-        this.addWindowListener(owner.getWindowListener());
+        this.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                if (listener != null) {
+                    listener.dialogClosing();
+                }
+                closeDialog();
+            }
+        });
         
         setLayout(new GridBagLayout());
         
         GridBagConstraints gbc;
         gbc = makeGridBagConstraints(0,0,2,1,GridBagConstraints.CENTER);
         gbc.insets = new Insets(5,5,10,5);
-        add(new LinkLabel("<html><body style='width:300px;'>"+Language.getString("login.getTokenInfo"), owner.getLinkLabelListener()), gbc);
+        add(new LinkLabel("<html><body style='width:300px;'>"+Language.getString(bot ? "login.getTokenInfoBot" : "login.getTokenInfo"),
+                listener), gbc);
         
         JPanel permissions = new JPanel(new GridBagLayout());
         permissions.setBorder(BorderFactory.createTitledBorder(Language.getString("login.tokenPermissions")));
@@ -68,6 +89,9 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
         int x = 0;
         int y = 0;
         for (ScopeCategory cat : TokenInfo.ScopeCategory.values()) {
+            if (bot && cat == ScopeCategory.USER) {
+                continue;
+            }
             JLabel categoryLabel = new JLabel(cat.label);
             gbc = makeGridBagConstraints(x, y, 1, 1, GridBagConstraints.WEST);
             permissions.add(categoryLabel, gbc);
@@ -79,6 +103,9 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
                 checkbox.addItemListener(e -> updateUrl());
                 if (scope == Scope.CHAT_EDIT || scope == Scope.CHAT_READ) {
                     checkbox.setEnabled(false);
+                }
+                if (bot && scope.requiresSubscription) {
+                    checkbox.setSelected(false);
                 }
                 gbc = makeGridBagConstraints(x, y, 1, 1, GridBagConstraints.WEST);
                 gbc.insets = new Insets(0, 5, 0, 5);
@@ -116,7 +143,7 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
         add(openUrl,gbc);
         
         // Status and Close Button
-        status = new LinkLabel("", owner.getLinkLabelListener());
+        status = new LinkLabel("", listener);
         add(status,makeGridBagConstraints(0,y+3,2,1,GridBagConstraints.CENTER));
         gbc = makeGridBagConstraints(0,y+4,2,1,GridBagConstraints.EAST);
         gbc.fill = GridBagConstraints.HORIZONTAL;
@@ -124,7 +151,12 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
         
         openUrl.addActionListener(this);
         copyUrl.addActionListener(this);
-        close.addActionListener(owner.getActionListener());
+        close.addActionListener(e -> {
+            if (listener != null) {
+                listener.actionPerformed(new ActionEvent(getCloseButton(), 0, "closeTokenDialog"));
+            }
+            closeDialog();
+        });
         
         reset();
         updateUrl();
@@ -132,6 +164,13 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
         pack();
     }
     
+    private void closeDialog() {
+        if (tokenCallback != null) {
+            tokenCallback.accept(null);
+        }
+        dispose();
+    }
+
     public JButton getCloseButton() {
         return close;
     }
@@ -158,18 +197,14 @@ public class TokenGetDialog extends JDialog implements ItemListener, ActionListe
                 + "Read the [help-guide2: help] on how to proceed.");
     }
     
-    public void tokenReceived() {
+    public void tokenReceived(String token) {
         setStatus("Token received.. completing..");
+        if (tokenCallback != null) {
+            tokenCallback.accept(token);
+        }
+        dispose();
     }
     
-    public void setTokenCallback(Consumer<String> tokenCallback) {
-        this.tokenCallback = tokenCallback;
-    }
-
-    public Consumer<String> getTokenCallback() {
-        return tokenCallback;
-    }
-
     private void setStatus(String text) {
         status.setText("<html><body style='width:250px;text-align:center'>"+text);
         pack();

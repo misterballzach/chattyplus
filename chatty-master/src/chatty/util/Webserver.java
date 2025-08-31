@@ -1,6 +1,6 @@
-
 package chatty.util;
 
+import chatty.gui.components.TokenGetDialog;
 import java.io.*;
 import java.net.*;
 import java.util.ArrayList;
@@ -27,6 +27,7 @@ public class Webserver implements Runnable {
     private volatile boolean running = true;
     private volatile ServerSocket serverSocket = null;
     private final WebserverListener listener;
+    private final TokenGetDialog dialog;
     private int connectionCount = 0;
     
     private final List<WebserverConnection> connections =
@@ -59,7 +60,7 @@ public class Webserver implements Runnable {
             public void webserverTokenReceived(String token) {
                 System.out.println("Save token and stuff");
             }
-        });
+        }, null);
         new Thread(s).start();
     }
 
@@ -69,8 +70,9 @@ public class Webserver implements Runnable {
      * 
      * @param listener Listener to return state information and data to 
      */
-    public Webserver(WebserverListener listener) {
+    public Webserver(WebserverListener listener, Object dialog) {
         this.listener = listener;
+        this.dialog = (TokenGetDialog)dialog;
     }
     
     /**
@@ -111,12 +113,18 @@ public class Webserver implements Runnable {
             if (listener != null) {
                 listener.webserverError("Could not listen to port "+port);
             }
+            if (dialog != null) {
+                dialog.error("Could not listen to port "+port);
+            }
             stop();
             return;
         }
 
         if (listener != null) {
             listener.webserverStarted();
+        }
+        if (dialog != null) {
+            dialog.ready();
         }
         
         while (running) {
@@ -276,6 +284,9 @@ public class Webserver implements Runnable {
                         debugConnection("Token received");
                         if (listener != null) {
                             listener.webserverTokenReceived(token);
+                        }
+                        if (dialog != null) {
+                            dialog.tokenReceived(token);
                         }
                     }
                 }
