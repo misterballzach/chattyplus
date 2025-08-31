@@ -27,7 +27,7 @@ sourceSets {
             srcDirs = ['src']
         }
         resources {
-            srcDirs = ['src']
+            srcDirs = ['src', 'src/main/resources']
         }
     }
     test {
@@ -335,4 +335,3 @@ task createChecksums(type: Checksum) {
     outputDir = new File(releasesDir, "v"+version)
     algorithm = Checksum.Algorithm.SHA256
 }
-
